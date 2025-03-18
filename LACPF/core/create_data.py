@@ -1,7 +1,7 @@
 import pandapower as pp
 import numpy as np
 
-from read_data import read_data
+from LACPF.core.read_data import read_data
 
 
 def create_J(net):

@@ -3,7 +3,7 @@ import pandas as pd
 import pandapower as pp
 import copy
 
-from read_data import read_data
+from LACPF.core.read_data import read_data
 
 
 def create_perturbation(net, perturbation):

@@ -231,6 +231,8 @@ def create_J(net):
         N_LL,
         N_LG,
         K_LL,
+        G,
+        B,
     )
 
 
@@ -346,8 +348,8 @@ if __name__ == "__main__":
     net = read_data(case)
     pp.rundcpp(net)
 
-    N_L, N_G, N_buses, H_LL, H_LG, M_LL, H_GL, H_GG, M_GL, N_LL, N_LG, K_LL = create_J(
-        net
+    N_L, N_G, N_buses, H_LL, H_LG, M_LL, H_GL, H_GG, M_GL, N_LL, N_LG, K_LL, G, B = (
+        create_J(net)
     )
 
     print("\n\tTEST CREATE_DATA_FOR_OPT.PY SUCCESSFULLY!\n")

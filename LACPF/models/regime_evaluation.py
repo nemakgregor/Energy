@@ -58,6 +58,91 @@ def evaluate_regimes(result):
     net_base.res_bus.loc[pq_buses, "vm_pu"] += U_L_values
     print("\nLACPF results applied to the net_base")
 
+    G = result["G"]
+    B = result["B"]
+
+    bus_lookup = {bus: idx for idx, bus in enumerate(net.bus.index)}
+    slack_bus = net_base.ext_grid.bus.values[0]
+    slack_idx = bus_lookup[slack_bus]
+
+    # Собираем напряжения и углы
+    V = net_base.res_bus.vm_pu.values
+    theta = np.deg2rad(net_base.res_bus.va_degree.values)  # Приводим углы к радианам
+
+    P_slack = 0.0
+    Q_slack = 0.0
+
+    for _, line in net.line.iterrows():
+        from_idx = bus_lookup[line["from_bus"]]
+        to_idx = bus_lookup[line["to_bus"]]
+
+        # Проверяем, участвует ли slack в линии
+        if slack_idx == from_idx:
+            neighbor_idx = to_idx
+        elif slack_idx == to_idx:
+            neighbor_idx = from_idx
+        else:
+            continue  # Линия не подключена к slack
+
+        # Берем проводимость по индексам
+        G_slack_neighbor = G[slack_idx, neighbor_idx]
+        B_slack_neighbor = B[slack_idx, neighbor_idx]
+
+        P_slack += (
+            V[slack_bus]
+            * V[neighbor_idx]
+            * (
+                G_slack_neighbor * np.cos(theta[slack_idx] - theta[neighbor_idx])
+                + B_slack_neighbor * np.sin(theta[slack_idx] - theta[neighbor_idx])
+            )
+        )
+        Q_slack += (
+            V[slack_bus]
+            * V[neighbor_idx]
+            * (
+                G_slack_neighbor * np.sin(theta[slack_idx] - theta[neighbor_idx])
+                - B_slack_neighbor * np.cos(theta[slack_idx] - theta[neighbor_idx])
+            )
+        )
+
+    # # Добавляем самонагрузку (если хочешь учесть Gii)
+    # P_slack += V[slack_idx] ** 2 * G[slack_idx, slack_idx]
+    # Q_slack -= V[slack_idx] ** 2 * B[slack_idx, slack_idx]
+
+    # Приводим к MW / MVar
+    P_slack *= net_base.sn_mva
+    Q_slack *= net_base.sn_mva
+
+    # Add results to the net_base
+    net_base.res_ext_grid["p_mw"] = P_slack
+    net_base.res_ext_grid["q_mvar"] = Q_slack
+
+    def get_slack_values(net, label):
+        if not net.res_ext_grid.empty:
+            P_slack = net.res_ext_grid["p_mw"].sum()
+            Q_slack = net.res_ext_grid["q_mvar"].sum()
+        else:
+            P_slack = 0.0
+            Q_slack = 0.0
+        return {
+            "Network": label,
+            "P_slack (MW)": round(P_slack, 4),
+            "Q_slack (MVar)": round(Q_slack, 4),
+        }
+
+    # Собираем результаты в список
+    slack_data = [
+        get_slack_values(net_base, "LACPF"),
+        get_slack_values(net_ac, "AC"),
+        get_slack_values(net_dc, "DC"),
+    ]
+
+    # Формируем DataFrame для красивого вывода
+    slack_results = pd.DataFrame(slack_data)
+
+    # print("\n✅ Slack Power Comparison (from net.res_ext_grid):")
+    print(tabulate(slack_results, headers="keys", tablefmt="psql", showindex=False))
+
     df_comparison = pd.DataFrame(
         {
             "V_AC": net_ac.res_bus["vm_pu"].values.round(4),

@@ -11,8 +11,8 @@ from LACPF.core.solver import solve
 
 def calculate_regime(net, perturbation):
 
-    N_L, N_G, N_buses, H_LL, H_LG, M_LL, H_GL, H_GG, M_GL, N_LL, N_LG, K_LL = create_J(
-        net
+    N_L, N_G, N_buses, H_LL, H_LG, M_LL, H_GL, H_GG, M_GL, N_LL, N_LG, K_LL, G, B = (
+        create_J(net)
     )
     net_mod, df_perturbation = create_perturbation(net, perturbation)
 
@@ -54,6 +54,8 @@ def calculate_regime(net, perturbation):
         "net_ac": net_ac,
         "net_dc": net_dc,
         "net_lacpf": net_mod,
+        "G": G,
+        "B": B,
     }
 
 

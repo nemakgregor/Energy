@@ -42,6 +42,10 @@ def calculate_regime(net, perturbation):
     except Exception as e:
         print(f"\tDC Power Flow failed: {e}")
 
+    # Update net_mod.res_load with net_mod.load values for p_mw and q_mvar
+    net_mod.res_load["p_mw"] = net_mod.load["p_mw"]
+    net_mod.res_load["q_mvar"] = net_mod.load["q_mvar"]
+
     print("\n\tREGIME CALCULATED SUCCESSFULLY!!!")
     return {
         "delta_L": delta_L_values,

@@ -1,1 +1,1 @@
-python -m LACPF.models.calculate_regime
+python -m LACPF.models.regime_evaluation

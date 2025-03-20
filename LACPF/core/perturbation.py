@@ -29,7 +29,7 @@ def create_perturbation(net, perturbation):
     return net_perturbed, df_perturbation
 
 
-def build_full_perturbation_template(net):
+def build_full_perturbation_template(net, proc):
     buses = net.bus.index
     sn_mva = net.sn_mva  # базовая мощность сети для перевода в p.u.
 
@@ -67,7 +67,7 @@ def build_full_perturbation_template(net):
             delta_load_percent.append(0)
         else:
             delta_load_percent.append(
-                50
+                proc
             )  # Здесь можно задать базу, дальше менять выборочно
 
     perturbation = pd.DataFrame(
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     print(net.load)
     print(net.gen)
 
-    perturbation = build_full_perturbation_template(net)
+    perturbation = build_full_perturbation_template(net, proc = 50)
     print("\nPerturbation template:\n", perturbation)
 
     net_mod, df_perturbation = create_perturbation(net, perturbation)

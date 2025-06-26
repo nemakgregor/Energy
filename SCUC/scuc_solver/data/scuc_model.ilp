@@ -1,0 +1,16 @@
+\ Model SCUC_copy
+\ LP format - for model browsing. Use MPS format to capture full model detail.
+\ Signature: 0xd77d2c5820a0decd
+Minimize
+ 
+Subject To
+ R184: charge[su2,1] >= 5
+ R186: discharge[su2,1] >= 2
+ R190: charge[su2,1] - 10 charge_binary[su2,1] <= 0
+ R191: discharge[su2,1] + 10 charge_binary[su2,1] <= 10
+Bounds
+ charge[su2,1] free
+ discharge[su2,1] free
+Binaries
+ charge_binary[su2,1]
+End

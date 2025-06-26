@@ -31,8 +31,8 @@ def read_data(case, data_path=Path("data_matpower")):
             I_base = S_base / (V_base * (3**0.5))
 
             # Рассчитываем параметры в per unit
-            r_pu = line["r_ohm_per_km"] / Z_base
-            x_pu = line["x_ohm_per_km"] / Z_base
+            r_pu = (line["r_ohm_per_km"] * line["length_km"]) / Z_base
+            x_pu = (line["x_ohm_per_km"] * line["length_km"]) / Z_base
 
             C = line["c_nf_per_km"] * line["length_km"] / 1e9
             b = omega * C

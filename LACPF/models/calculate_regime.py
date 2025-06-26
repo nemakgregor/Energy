@@ -7,6 +7,7 @@ from LACPF.core.perturbation import (
     create_perturbation,
 )
 from LACPF.core.solver import solve
+from LACPF.core.NRM import run_newton_pf
 
 
 def calculate_regime(net, perturbation):
@@ -27,6 +28,13 @@ def calculate_regime(net, perturbation):
     # Клонируем сеть для AC и DC расчётов
     net_ac = copy.deepcopy(net_mod)
     net_dc = copy.deepcopy(net_mod)
+    net_nr = copy.deepcopy(net_mod)
+
+    try:
+        run_newton_pf(net_nr)
+        print("NR AC solved successfully")
+    except Exception as e:
+        print(f"\tNR AC Power Flow failed: {e}")
 
     # Считаем AC Power Flow
     try:
@@ -45,12 +53,15 @@ def calculate_regime(net, perturbation):
     # Update net_mod.res_load with net_mod.load values for p_mw and q_mvar
     net_mod.res_load["p_mw"] = net_mod.load["p_mw"]
     net_mod.res_load["q_mvar"] = net_mod.load["q_mvar"]
+    net_mod.res_ext_grid["p_mw"] = 0
+    net_mod.res_ext_grid["q_mvar"] = 0
 
     print("\n\tREGIME CALCULATED SUCCESSFULLY!!!")
     return {
         "delta_L": delta_L_values,
         "delta_G": delta_G_values,
         "U_L": U_L_values,
+        "net_nr": net_nr,
         "net_ac": net_ac,
         "net_dc": net_dc,
         "net_lacpf": net_mod,

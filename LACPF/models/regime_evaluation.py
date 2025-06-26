@@ -1,346 +1,230 @@
-import pandas as pd
 import numpy as np
-import pandapower as pp
+import pandas as pd
 from tabulate import tabulate
+from typing import Dict, Any, Tuple, List
+import pandapower as pp
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
 
 
-def evaluate_regimes(result):
-    net_base = result["net_lacpf"]
-    net_ac = result["net_ac"]
-    net_dc = result["net_dc"]
+def _bus_groups(net: pp.pandapowerNet) -> Tuple[List[int], List[int], List[int]]:
+    slack = list(net.ext_grid.bus.values)
+    pv = [b for b in net.gen.bus.values if b not in slack]
+    pq = [b for b in net.bus.index if b not in slack + pv]
+    return slack, pv, pq
 
-    slack_buses = list(
-        net_base.ext_grid.bus.values
-    )  # Slack-узлы (обычно 1 узел, но на всякий случай оставляем массив)
-    pv_buses = list(net_base.gen.bus.values)  # PV-узлы (генераторные, кроме slack)
-    pq_buses = np.setdiff1d(
-        net_base.bus.index, np.concatenate((slack_buses, pv_buses))
-    )  # Чистые PQ-узлы
 
-    delta_L_values = result["delta_L"]
-    delta_G_values = result["delta_G"]
-    U_L_values = result["U_L"]
-
-    # Check for NaN or None values in the results
-    if any(v is None or np.isnan(v) for v in delta_L_values):
-        raise ValueError("\n\tNaN or None values found in delta_L_values!!!\n")
-
-    if any(v is None or np.isnan(v) for v in delta_G_values):
-        raise ValueError("\n\tNaN or None values found in delta_G_values!!!\n")
-
-    if any(v is None or np.isnan(v) for v in U_L_values):
-        raise ValueError("\n\tNaN or None values found in U_L_values!!!\n")
-
-    delta_L_values = [0 if v is None or np.isnan(v) else v for v in delta_L_values]
-    delta_G_values = [0 if v is None or np.isnan(v) else v for v in delta_G_values]
-    U_L_values = [0 if v is None or np.isnan(v) else v for v in U_L_values]
-
-    # Проверяем соответствие размеров массивов
-    if len(pq_buses) != len(delta_L_values):
-        raise ValueError(
-            f"Mismatch: {len(pq_buses)} PQ buses but {len(delta_L_values)} delta values"
+def _ensure_tables(net: pp.pandapowerNet):
+    if net.res_bus.empty:
+        net.res_bus = pd.DataFrame(index=net.bus.index)
+    if net.res_ext_grid.empty:
+        net.res_ext_grid = pd.DataFrame(
+            index=net.ext_grid.index, columns=["p_mw", "q_mvar"]
         )
+    if not net.gen.empty and net.res_gen.empty:
+        net.res_gen = pd.DataFrame(index=net.gen.index, columns=["p_mw", "q_mvar"])
+    if not net.load.empty and net.res_load.empty:
+        net.res_load = pd.DataFrame(index=net.load.index, columns=["p_mw", "q_mvar"])
 
-    if len(pv_buses) != len(delta_G_values):
-        raise ValueError(
-            f"Mismatch: {len(pv_buses)} PV buses but {len(delta_G_values)} delta values"
-        )
 
-    # Обновляем углы напряжений
-    net_base.res_bus.loc[pq_buses, "va_degree"] += (
-        np.array(delta_L_values) * 57
-    )  # Изменяем углы PQ-узлов (нагрузочных)
-    net_base.res_bus.loc[pv_buses, "va_degree"] += (
-        np.array(delta_G_values) * 57
-    )  # Изменяем углы PV-узлов (генераторных)
+def _recompute_lacpf_slack_gen(result: Dict[str, Any]):
+    """If slack/gen values in net_lacpf are NaN, recompute using G/B."""
+    net = result["net_lacpf"]
+    _ensure_tables(net)
 
-    # Обновляем модули напряжений только для PQ-узлов
-    net_base.res_bus.loc[pq_buses, "vm_pu"] += U_L_values
-    print("\nLACPF results applied to the net_base")
+    if net.res_ext_grid["p_mw"].notna().all() and net.res_gen.q_mvar.notna().all():
+        return  # already filled
 
-    G = result["G"]
-    B = result["B"]
+    G: np.ndarray = result["G"]
+    B: np.ndarray = result["B"]
+    V = net.res_bus.vm_pu.values
+    theta = np.deg2rad(net.res_bus.va_degree.values)
+    nb = len(net.bus)
 
-    bus_lookup = {bus: idx for idx, bus in enumerate(net.bus.index)}
-    slack_bus = net_base.ext_grid.bus.values[0]
-    slack_idx = bus_lookup[slack_bus]
-
-    # Собираем напряжения и углы
-    V = net_base.res_bus.vm_pu.values
-    theta = np.deg2rad(net_base.res_bus.va_degree.values)  # Приводим углы к радианам
-
-    P_slack = 0.0
-    Q_slack = 0.0
-
-    for _, line in net.line.iterrows():
-        from_idx = bus_lookup[line["from_bus"]]
-        to_idx = bus_lookup[line["to_bus"]]
-
-        # Проверяем, участвует ли slack в линии
-        if slack_idx == from_idx:
-            neighbor_idx = to_idx
-        elif slack_idx == to_idx:
-            neighbor_idx = from_idx
-        else:
-            continue  # Линия не подключена к slack
-
-        # Берем проводимость по индексам
-        G_slack_neighbor = G[slack_idx, neighbor_idx]
-        B_slack_neighbor = B[slack_idx, neighbor_idx]
-
-        P_slack += (
-            V[slack_bus]
-            * V[neighbor_idx]
-            * (
-                G_slack_neighbor * np.cos(theta[slack_idx] - theta[neighbor_idx])
-                + B_slack_neighbor * np.sin(theta[slack_idx] - theta[neighbor_idx])
-            )
-        )
-        Q_slack += (
-            V[slack_bus]
-            * V[neighbor_idx]
-            * (
-                G_slack_neighbor * np.sin(theta[slack_idx] - theta[neighbor_idx])
-                - B_slack_neighbor * np.cos(theta[slack_idx] - theta[neighbor_idx])
-            )
-        )
-
-    # # Добавляем самонагрузку (если хочешь учесть Gii)
-    # P_slack += V[slack_idx] ** 2 * G[slack_idx, slack_idx]
-    # Q_slack -= V[slack_idx] ** 2 * B[slack_idx, slack_idx]
-
-    # Приводим к MW / MVar
-    P_slack *= net_base.sn_mva
-    Q_slack *= net_base.sn_mva
-
-    # Add results to the net_base
-    net_base.res_ext_grid["p_mw"] = P_slack
-    net_base.res_ext_grid["q_mvar"] = Q_slack
-
-    def get_slack_values(net, label):
-        if not net.res_ext_grid.empty:
-            P_slack = net.res_ext_grid["p_mw"].sum()
-            Q_slack = net.res_ext_grid["q_mvar"].sum()
-        else:
-            P_slack = 0.0
-            Q_slack = 0.0
-        return {
-            "Network": label,
-            "P_slack (MW)": round(P_slack, 4),
-            "Q_slack (MVar)": round(Q_slack, 4),
-        }
-
-    # Собираем результаты в список
-    slack_data = [
-        get_slack_values(net_base, "LACPF"),
-        get_slack_values(net_ac, "AC"),
-        get_slack_values(net_dc, "DC"),
-    ]
-
-    # Формируем DataFrame для красивого вывода
-    slack_results = pd.DataFrame(slack_data)
-
-    # print("\n✅ Slack Power Comparison (from net.res_ext_grid):")
-    print(tabulate(slack_results, headers="keys", tablefmt="psql", showindex=False))
-
-    df_comparison = pd.DataFrame(
-        {
-            "V_AC": net_ac.res_bus["vm_pu"].values.round(4),
-            "V_model": net_base.res_bus["vm_pu"].values.round(4),
-            "V_DC": net_dc.res_bus["vm_pu"].values.round(4),
-            "ok_V?": np.where(
-                np.abs(
-                    net_base.res_bus["vm_pu"].values - net_ac.res_bus["vm_pu"].values
+    P_calc = np.zeros(nb)
+    Q_calc = np.zeros(nb)
+    for i in range(nb):
+        for j in range(nb):
+            P_calc[i] += (
+                V[i]
+                * V[j]
+                * (
+                    G[i, j] * np.cos(theta[i] - theta[j])
+                    + B[i, j] * np.sin(theta[i] - theta[j])
                 )
-                <= np.abs(
-                    net_dc.res_bus["vm_pu"].values - net_ac.res_bus["vm_pu"].values
-                ),
-                1,
-                0,
-            ),
-            "Ang_AC": net_ac.res_bus["va_degree"].values.round(4),
-            "Ang_model": net_base.res_bus["va_degree"].values.round(4),
-            "Ang_DC": net_dc.res_bus["va_degree"].values.round(4),
-            "ok_Ang?": np.where(
-                np.abs(
-                    net_base.res_bus["va_degree"].values
-                    - net_ac.res_bus["va_degree"].values
-                )
-                <= np.abs(
-                    net_dc.res_bus["va_degree"].values
-                    - net_ac.res_bus["va_degree"].values
-                ),
-                1,
-                0,
-            ),
-        },
-        index=net_base.res_bus.index,  # Убеждаемся, что индексы совпадают
-    )
-
-    # Добавляем итоговую строку с общим количеством значений 1 в столбцах ok_V? и ok_Ang?
-    total_ok_V = df_comparison["ok_V?"].sum()
-    total_ok_Ang = df_comparison["ok_Ang?"].sum()
-    total_row = pd.DataFrame(
-        {
-            "V_AC": [""],
-            "V_model": [""],
-            "V_DC": [""],
-            # "|": [""],
-            "ok_V?": [f"{total_ok_V}/{len(df_comparison)}"],
-            # "||": [""],
-            "Ang_AC": [""],
-            "Ang_model": [""],
-            "Ang_DC": [""],
-            # "|": [""],
-            "ok_Ang?": [f"{total_ok_Ang}/{len(df_comparison)}"],
-        },
-        index=["Total"],
-    )
-    df_comparison = pd.concat([df_comparison, total_row])
-
-    # Создаём столбец с типом узла: Slack, PV или PQ
-    def bus_type(bus_idx):
-        if bus_idx in slack_buses:
-            return "Slack"
-        elif bus_idx in pv_buses:
-            return "PV"
-        else:
-            return "PQ"
-
-    df_comparison["bus_type"] = df_comparison.index.map(bus_type)
-    print("\nCalculations comparison:")
-    print(tabulate(df_comparison, headers="keys", tablefmt="psql"))
-
-    voltage_violations = net_base.res_bus.loc[pq_buses, "vm_pu"] < 0.9
-    angle_violations = net_base.res_bus.loc[pq_buses, "va_degree"].abs() > 30
-
-    if voltage_violations.any():
-        violating_buses = net_base.res_bus.loc[pq_buses[voltage_violations], "vm_pu"]
-        print("\t⚠️ WARNING: Voltage below 0.9 pu detected in the following buses:")
-        print(violating_buses)
-    else:
-        print("✅ All LACPF voltages are within the limits")
-
-    if angle_violations.any():
-        violating_buses = net_base.res_bus.loc[pq_buses[angle_violations], "va_degree"]
-        print("\t⚠️ WARNING: Voltage angle exceeds 30 degrees in the following buses:")
-        print(violating_buses)
-    else:
-        print("✅ All LACPF angles are within the limits")
-
-    def compute_pq(net, name, print_results=False):
-        if print_results:
-            print("\nname: ", name)
-            print("gen (net.res_gen):\n", net.res_gen)
-
-        if not net.res_gen.empty:
-            gen = net.res_gen.join(net.gen[["bus"]], how="left")
-            gen = gen.groupby("bus")[["p_mw", "q_mvar"]].sum()
-        else:
-            gen = pd.DataFrame(columns=["p_mw", "q_mvar"])
-
-        gen = gen.reindex(net.bus.index, fill_value=0.0)
-
-        if print_results:
-            print("load (net.res_load):\n", net.res_load)
-
-        if not net.res_load.empty:
-            load = net.res_load.join(net.load[["bus"]], how="left")
-            load = load.groupby("bus")[["p_mw", "q_mvar"]].sum()
-        else:
-            load = pd.DataFrame(columns=["p_mw", "q_mvar"])
-
-        load = load.reindex(net.bus.index, fill_value=0.0)
-
-        if print_results:
-            print("slack (net.res_ext_grid):\n", net.res_ext_grid)
-
-        if not net.res_ext_grid.empty:
-            slack_bus = net.ext_grid.bus.values[0]
-            slack_p = (
-                net.res_ext_grid.p_mw.values[0] if "p_mw" in net.res_ext_grid else 0.0
             )
-            slack_q = (
-                net.res_ext_grid.q_mvar.values[0]
-                if "q_mvar" in net.res_ext_grid
+            Q_calc[i] += (
+                V[i]
+                * V[j]
+                * (
+                    G[i, j] * np.sin(theta[i] - theta[j])
+                    - B[i, j] * np.cos(theta[i] - theta[j])
+                )
+            )
+
+    sn = float(net.sn_mva)
+    slack, pv, _ = _bus_groups(net)
+
+    for idx, sb in enumerate(slack):
+        net.res_ext_grid.at[idx, "p_mw"] = P_calc[sb] * sn
+        net.res_ext_grid.at[idx, "q_mvar"] = Q_calc[sb] * sn
+
+    for g_idx, gen in net.gen.iterrows():
+        bus = int(gen.bus)
+        if bus in pv:
+            q_load = (
+                net.load.loc[net.load.bus == bus, "q_mvar"].sum()
+                if not net.load.empty
                 else 0.0
             )
-            slack = pd.DataFrame(0.0, index=net.bus.index, columns=["p_mw", "q_mvar"])
-            slack.loc[slack_bus, "p_mw"] = slack_p
-            slack.loc[slack_bus, "q_mvar"] = slack_q
-        else:
-            slack = pd.DataFrame(0.0, index=net.bus.index, columns=["p_mw", "q_mvar"])
+            net.res_gen.at[g_idx, "p_mw"] = gen.p_mw
+            net.res_gen.at[g_idx, "q_mvar"] = (Q_calc[bus] + q_load / sn) * sn
 
-        pq = (gen - load + slack).fillna(0.0)
 
-        if print_results:
-            print("\nComputed PQ for '{}':\n".format(name))
-            print(pq)
-        return pq
+# ---------------------------------------------------------------------------
+# Report helpers
+# ---------------------------------------------------------------------------
 
-    pq_lacpf = compute_pq(net_base, "base")
-    pq_ac = compute_pq(net_ac, "ac")
-    pq_dc = compute_pq(net_dc, "dc")
 
-    df_pq = pd.DataFrame(index=net_base.bus.index)
-    df_pq["P_LACPF"] = df_pq.index.map(pq_lacpf["p_mw"].to_dict()).fillna(0).round(4)
-    df_pq["Q_LACPF"] = df_pq.index.map(pq_lacpf["q_mvar"].to_dict()).fillna(0).round(4)
-    df_pq["P_AC"] = df_pq.index.map(pq_ac["p_mw"].to_dict()).fillna(0).round(4)
-    df_pq["Q_AC"] = df_pq.index.map(pq_ac["q_mvar"].to_dict()).fillna(0).round(4)
-    df_pq["P_DC"] = df_pq.index.map(pq_dc["p_mw"].to_dict()).fillna(0).round(4)
-    df_pq["Q_DC"] = df_pq.index.map(pq_dc["q_mvar"].to_dict()).fillna(0).round(4)
+def _slack_row(net: pp.pandapowerNet, label: str):
+    p = net.res_ext_grid.p_mw.sum() if not net.res_ext_grid.empty else 0.0
+    q = net.res_ext_grid.q_mvar.sum() if not net.res_ext_grid.empty else 0.0
+    return {
+        "Network": label,
+        "P_slack (MW)": round(p, 2),
+        "Q_slack (MVar)": round(q, 2),
+    }
 
-    df_pq["bus_type"] = df_pq.index.map(bus_type)
 
-    total_row = pd.DataFrame(df_pq.drop(columns="bus_type").sum(), columns=["Total"]).T
-    total_row["bus_type"] = "Total"
+def _pq_balance(net: pp.pandapowerNet):
+    p_gen = net.res_gen.p_mw.sum() if not net.res_gen.empty else 0.0
+    q_gen = net.res_gen.q_mvar.sum() if not net.res_gen.empty else 0.0
+    p_load = net.res_load.p_mw.sum() if not net.res_load.empty else 0.0
+    q_load = net.res_load.q_mvar.sum() if not net.res_load.empty else 0.0
+    p_slack = net.res_ext_grid.p_mw.sum() if not net.res_ext_grid.empty else 0.0
+    q_slack = net.res_ext_grid.q_mvar.sum() if not net.res_ext_grid.empty else 0.0
+    return p_gen - p_load + p_slack, q_gen - q_load + q_slack
 
-    df_pq = pd.concat([df_pq, total_row], ignore_index=False)
 
-    print("\nPQ values:")
-    print(tabulate(df_pq, headers="keys", tablefmt="psql"))
+# ---------------------------------------------------------------------------
+# Main evaluation
+# ---------------------------------------------------------------------------
 
-    TOLERANCE = 10
 
-    total_p_lacpf = total_row["P_LACPF"].values[0]
-    total_q_lacpf = total_row["Q_LACPF"].values[0]
-    total_p_ac = total_row["P_AC"].values[0]
-    total_q_ac = total_row["Q_AC"].values[0]
-    total_p_dc = total_row["P_DC"].values[0]
-    total_q_dc = total_row["Q_DC"].values[0]
+def evaluate_regimes(result: Dict[str, Any], tol: float = 10.0):
+    """Print detailed comparison tables for LACPF / NR / pp‑AC / DC."""
 
-    def check_balance(val, label):
-        if abs(val) > TOLERANCE:
-            print(
-                f"\t⚠️ WARNING: {label} balance = {val:.4f} exceeds tolerance ±{TOLERANCE}"
+    # ---- unpack nets -------------------------------------------------
+    net_lin: pp.pandapowerNet = result["net_lacpf"]
+    net_nr: pp.pandapowerNet = result["net_nr"]
+    net_ac: pp.pandapowerNet = result["net_ac"]
+    net_dc: pp.pandapowerNet = result["net_dc"]
+
+    for n in (net_lin, net_nr, net_ac, net_dc):
+        _ensure_tables(n)
+
+    # Fix missing slack/gen in linear AC
+    _recompute_lacpf_slack_gen(result)
+
+    # 1. Slack power summary ------------------------------------------
+    slack_tbl = pd.DataFrame(
+        [
+            _slack_row(net_lin, "LACPF"),
+            _slack_row(net_nr, "NR"),
+            _slack_row(net_ac, "pp‑AC"),
+            _slack_row(net_dc, "DC"),
+        ]
+    )
+    print("=== Slack Power Comparison ===")
+    print(tabulate(slack_tbl, headers="keys", tablefmt="psql", showindex=False))
+
+    # 2. Bus voltage / angle errors vs pp‑AC ---------------------------
+    Vm_ref = net_ac.res_bus.vm_pu.values
+    Va_ref = net_ac.res_bus.va_degree.values
+
+    df_bus = pd.DataFrame(index=net_ac.bus.index)
+    for label, net in [("LACPF", net_lin), ("NR", net_nr), ("DC", net_dc)]:
+        df_bus[f"V_{label}"] = np.round(net.res_bus.vm_pu.values, 4)
+        df_bus[f"dV_{label}"] = np.round(np.abs(net.res_bus.vm_pu.values - Vm_ref), 4)
+        df_bus[f"Ang_{label}"] = np.round(net.res_bus.va_degree.values, 4)
+        df_bus[f"dA_{label}"] = np.round(
+            np.abs(net.res_bus.va_degree.values - Va_ref), 4
+        )
+    df_bus["V_AC"] = np.round(Vm_ref, 4)
+    df_bus["Ang_AC"] = np.round(Va_ref, 4)
+
+    # OK counts
+    v_ok = (df_bus.filter(like="dV_") <= 0.01).sum()
+    a_ok = (df_bus.filter(like="dA_") <= 0.5).sum()
+    total = {col: "" for col in df_bus.columns}
+    for col in v_ok.index:
+        total[col] = f"{v_ok[col]}/{len(df_bus)}"
+    for col in a_ok.index:
+        total[col] = f"{a_ok[col]}/{len(df_bus)}"
+    df_bus = pd.concat([df_bus, pd.DataFrame(total, index=["Total"])]).reset_index(
+        names=["bus"]
+    )
+
+    print("=== Bus Voltage & Angle Errors vs pp‑AC ===")
+    print(tabulate(df_bus, headers="keys", tablefmt="psql", showindex=False))
+
+    # 3. PV‑generator Q comparison ------------------------------------
+    if not net_lin.res_gen.empty and not net_ac.res_gen.empty:
+        df_Q = pd.DataFrame(
+            {
+                "Q_LACPF": net_lin.res_gen.q_mvar.values.round(2),
+                "Q_NR": (
+                    net_nr.res_gen.q_mvar.values.round(2)
+                    if not net_nr.res_gen.empty
+                    else 0.0
+                ),
+                "Q_AC": net_ac.res_gen.q_mvar.values.round(2),
+            }
+        )
+        df_Q["dQ_LACPF"] = np.abs(df_Q.Q_LACPF - df_Q.Q_AC).round(2)
+        df_Q["dQ_NR"] = np.abs(df_Q.Q_NR - df_Q.Q_AC).round(2)
+        print("=== PV Generator Reactive Power (MW) ===")
+        print(
+            tabulate(
+                df_Q.reset_index(names=["gen_id"]),
+                headers="keys",
+                tablefmt="psql",
+                showindex=False,
             )
-        else:
-            print(f"✅ {label} balance = {val:.4f} OK")
+        )
 
-    check_balance(total_p_lacpf, "P_LACPF")
-    check_balance(total_q_lacpf, "Q_LACPF")
-    check_balance(total_p_ac, "P_AC")
-    check_balance(total_q_ac, "Q_AC")
-    check_balance(total_p_dc, "P_DC")
-    check_balance(total_q_dc, "Q_DC")
+    # 4. System power balance -----------------------------------------
+    print("=== System Power Balance (ΔP / ΔQ) ===")
+    for label, net in [
+        ("LACPF", net_lin),
+        ("NR", net_nr),
+        ("pp‑AC", net_ac),
+        ("DC", net_dc),
+    ]:
+        dP, dQ = _pq_balance(net)
+        tagP = "OK" if abs(dP) <= tol else f"⚠ {dP:.1f}"
+        tagQ = "OK" if abs(dQ) <= tol else f"⚠ {dQ:.1f}"
+        print(f"{label:6s}  ΔP = {dP:9.2f} MW [{tagP}]   ΔQ = {dQ:9.2f} MVar [{tagQ}]")
 
-    print("\n\tREGIME EVALUATION SUCCESSFULLY!!!")
-    return 0
+    print("✅ Regime evaluation complete.")
 
 
+# ---------------------------------------------------------------------------
+# Stand‑alone test helper
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-
-    from LACPF.models.calculate_regime import calculate_regime
     from LACPF.core.read_data import read_data
     from LACPF.core.perturbation import build_full_perturbation_template
+    from LACPF.models.calculate_regime import calculate_regime
 
     case = "case4gs"
-    net = read_data(case)
-    pp.rundcpp(net)
+    net_base = read_data(case)
 
-    perturbation = build_full_perturbation_template(net, proc=20)
-    result = calculate_regime(net, perturbation)
+    perturb = build_full_perturbation_template(net_base, proc=20)  # 20 % load change
 
+    result = calculate_regime(net_base, perturb)
     evaluate_regimes(result)
 
-    print("\n\tTEST REGIME_EVALUATION.PY PASSED SUCCESSFULLY!!!\n")
+    print("TEST regime_evaluation.py PASSED SUCCESSFULLY")

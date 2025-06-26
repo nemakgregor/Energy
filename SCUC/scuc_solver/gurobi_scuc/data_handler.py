@@ -1,6 +1,8 @@
 import json
 import numpy as np
 
+from config import KEY_MAPPINGS, DEFAULTS
+
 
 def load_case(file_path):
     with open(file_path, "r") as f:
@@ -187,3 +189,214 @@ def validate_data(data):
         max_demand,
         [res["amount_mw"] for res in reserves.values()][0] if reserves else 0,
     )
+
+
+def load_case(filepath):
+    with open(filepath, "rt") as f:
+        data = json.load(f)
+    time_horizon = get_key_value(
+        data.get("Parameters", {}), "time_horizon", DEFAULTS["time_horizon"]
+    )
+    time_step_min = data.get("Parameters", {}).get("Time step (min)", None)
+    if time_step_min is not None:
+        time_step = time_step_min / 60.0
+        T = int(time_horizon / time_step)
+    else:
+        T = find_T(data, time_horizon)
+        time_step = time_horizon / T if T > 0 else 1.0
+    case_data = {
+        "parameters": {"time_horizon": time_horizon, "time_step": time_step},
+        "generators": {},
+        "buses": {},
+        "lines": {},
+        "contingencies": data.get("Contingencies", {}),
+        "storage_units": {},
+        "reserves": {},
+    }
+    for gen_id, gen_data in data.get("Generators", {}).items():
+        g_type = get_key_value(gen_data, "type", "Thermal")
+        if g_type == "Thermal":
+            p_mw = get_key_value(gen_data, "p_mw")
+            case_data["generators"][gen_id] = {
+                "type": g_type,
+                "bus": get_key_value(gen_data, "bus"),
+                "p_mw": p_mw,
+                "p_cost": get_key_value(gen_data, "p_cost"),
+                "startup_delays": get_key_value(gen_data, "startup_delays", [1]),
+                "startup_costs": get_key_value(gen_data, "startup_costs", [0]),
+                "ramp_up": get_key_value(gen_data, "ramp_up", DEFAULTS["ramp_up"]),
+                "ramp_down": get_key_value(
+                    gen_data, "ramp_down", DEFAULTS["ramp_down"]
+                ),
+                "startup_limit": get_key_value(
+                    gen_data, "startup_limit", DEFAULTS["startup_limit"]
+                ),
+                "shutdown_limit": get_key_value(
+                    gen_data, "shutdown_limit", DEFAULTS["shutdown_limit"]
+                ),
+                "must_run": get_key_value(gen_data, "must_run", False),
+                "min_uptime": get_key_value(
+                    gen_data, "min_uptime", DEFAULTS["min_uptime"]
+                ),
+                "min_downtime": get_key_value(
+                    gen_data, "min_downtime", DEFAULTS["min_downtime"]
+                ),
+                "initial_status": get_key_value(gen_data, "initial_status", 0),
+                "initial_power": get_key_value(gen_data, "initial_power", 0),
+                "reserve_eligibility": get_key_value(
+                    gen_data, "reserve_eligibility", []
+                ),
+                "commitment_status": get_key_value(gen_data, "commitment_status", None),
+            }
+        elif g_type == "Profiled":
+            min_power = get_key_value(gen_data, "min_power", 0.0)
+            max_power = get_key_value(gen_data, "max_power", 0.0)
+            p_cost = get_key_value(gen_data, "p_cost", 0.0)
+            min_power = ensure_list(
+                min_power, T, f"Generator {gen_id} min_power", default=0.0
+            )
+            max_power = ensure_list(
+                max_power, T, f"Generator {gen_id} max_power", default=0.0
+            )
+            p_cost = ensure_list(p_cost, T, f"Generator {gen_id} p_cost", default=0.0)
+            case_data["generators"][gen_id] = {
+                "type": g_type,
+                "bus": get_key_value(gen_data, "bus"),
+                "min_power": min_power,
+                "max_power": max_power,
+                "p_cost": p_cost,
+            }
+    for bus_id, bus_data in data.get("Buses", {}).items():
+        load_mw = get_key_value(bus_data, "load_mw", 0.0)
+        load_mw = ensure_list(load_mw, T, f"Bus {bus_id} load_mw", default=0.0)
+        case_data["buses"][bus_id] = {"load_mw": load_mw}
+    for line_id, line_data in data.get("Transmission lines", {}).items():
+        case_data["lines"][line_id] = {
+            "source_bus": get_key_value(line_data, "source_bus"),
+            "target_bus": get_key_value(line_data, "target_bus"),
+            "reactance": get_key_value(line_data, "reactance", float("inf")),
+            "susceptance": get_key_value(line_data, "susceptance", 0.0) / 100,
+            "normal_limit": get_key_value(
+                line_data, "normal_limit", DEFAULTS["normal_limit"]
+            ),
+            "emergency_limit": get_key_value(
+                line_data, "emergency_limit", DEFAULTS["emergency_limit"]
+            ),
+            "penalty": get_key_value(
+                line_data, "flow_penalty", DEFAULTS["flow_penalty"]
+            ),
+        }
+    for s_id, s_data in data.get("Storage units", {}).items():
+        s = {
+            "bus": get_key_value(s_data, "bus"),
+            "min_level": ensure_list(
+                get_key_value(s_data, "storage_min_level", 0.0),
+                T,
+                f"Storage {s_id} min_level",
+                default=0.0,
+            ),
+            "max_level": ensure_list(
+                get_key_value(
+                    s_data, "storage_max_level", DEFAULTS["storage_max_level"]
+                ),
+                T,
+                f"Storage {s_id} max_level",
+                default=DEFAULTS["storage_max_level"],
+            ),
+            "charge_cost": ensure_list(
+                get_key_value(
+                    s_data, "storage_charge_cost", DEFAULTS["storage_charge_cost"]
+                ),
+                T,
+                f"Storage {s_id} charge_cost",
+                default=DEFAULTS["storage_charge_cost"],
+            ),
+            "discharge_cost": ensure_list(
+                get_key_value(
+                    s_data, "storage_discharge_cost", DEFAULTS["storage_discharge_cost"]
+                ),
+                T,
+                f"Storage {s_id} discharge_cost",
+                default=DEFAULTS["storage_discharge_cost"],
+            ),
+            "charge_eff": ensure_list(
+                get_key_value(
+                    s_data, "storage_charge_eff", DEFAULTS["storage_charge_eff"]
+                ),
+                T,
+                f"Storage {s_id} charge_eff",
+                default=DEFAULTS["storage_charge_eff"],
+            ),
+            "discharge_eff": ensure_list(
+                get_key_value(
+                    s_data, "storage_discharge_eff", DEFAULTS["storage_discharge_eff"]
+                ),
+                T,
+                f"Storage {s_id} discharge_eff",
+                default=DEFAULTS["storage_discharge_eff"],
+            ),
+            "loss_factor": get_key_value(
+                s_data, "storage_loss_factor", DEFAULTS["storage_loss_factor"]
+            ),
+            "min_charge_rate": ensure_list(
+                get_key_value(s_data, "storage_min_charge_rate", 0.0),
+                T,
+                f"Storage {s_id} min_charge_rate",
+                default=0.0,
+            ),
+            "max_charge_rate": ensure_list(
+                get_key_value(
+                    s_data, "storage_max_charge_rate", DEFAULTS["storage_charge_rate"]
+                ),
+                T,
+                f"Storage {s_id} max_charge_rate",
+                default=DEFAULTS["storage_charge_rate"],
+            ),
+            "min_discharge_rate": ensure_list(
+                get_key_value(s_data, "storage_min_discharge_rate", 0.0),
+                T,
+                f"Storage {s_id} min_discharge_rate",
+                default=0.0,
+            ),
+            "max_discharge_rate": ensure_list(
+                get_key_value(
+                    s_data,
+                    "storage_max_discharge_rate",
+                    DEFAULTS["storage_discharge_rate"],
+                ),
+                T,
+                f"Storage {s_id} max_discharge_rate",
+                default=DEFAULTS["storage_discharge_rate"],
+            ),
+            "initial_level": get_key_value(
+                s_data, "storage_initial_level", DEFAULTS["storage_initial_level"]
+            ),
+            "last_min_level": get_key_value(s_data, "storage_last_min_level", 0.0),
+            "last_max_level": get_key_value(
+                s_data, "storage_last_max_level", DEFAULTS["storage_max_level"]
+            ),
+            "simultaneous": ensure_list(
+                get_key_value(s_data, "storage_simultaneous", True),
+                T,
+                f"Storage {s_id} simultaneous",
+                default=True,
+            ),
+        }
+        case_data["storage_units"][s_id] = s
+    for r_id, r_data in data.get("Reserves", {}).items():
+        amount_mw = get_key_value(r_data, "reserve_amount", 0.0)
+        amount_mw = ensure_list(amount_mw, T, f"Reserve {r_id} amount_mw", default=0.0)
+        case_data["reserves"][r_id] = {
+            "amount_mw": amount_mw,
+            "penalty": get_key_value(
+                r_data, "reserve_penalty", DEFAULTS["reserve_penalty"]
+            ),
+        }
+    errors, warnings, available_capacity_t0, max_demand, adjusted_reserve = (
+        validate_data(case_data)
+    )
+    if errors:
+        raise ValueError("\n".join(errors))
+    for warning in warnings:
+        print(warning)
+    return case_data, available_capacity_t0, max_demand, adjusted_reserve

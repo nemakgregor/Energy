@@ -9,6 +9,7 @@ from solution_logger import log_solution, print_solution
 def process_case(file_path, config, output_dir):
     try:
         data = load_case(file_path)
+
         errors, warnings, available_capacity_t0, max_demand, adjusted_reserve = (
             validate_data(data)
         )
@@ -54,5 +55,7 @@ if __name__ == "__main__":
         "cost_scale": 1000.0,
     }
 
-    input_files = [r"C:\Users\egor1\Desktop\Energy\Repo\SCUC\scuc_solver\data\case14.json"]
+    input_files = [
+        r"C:\Users\egor1\Desktop\Energy\Repo\SCUC\scuc_solver\data\case14.json"
+    ]
     run_batch(input_files, config)

@@ -1,3 +1,6 @@
+from gurobipy import GRB
+
+
 def solve_model(model):
     model.optimize()
     if model.status in [GRB.OPTIMAL, GRB.SUBOPTIMAL]:

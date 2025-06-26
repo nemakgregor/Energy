@@ -1,7 +1,11 @@
 import json
+import logging
 import numpy as np
 
 from config import KEY_MAPPINGS, DEFAULTS
+
+
+logger = logging.getLogger(__name__)
 
 
 def load_case(file_path):
@@ -398,5 +402,5 @@ def load_case(filepath):
     if errors:
         raise ValueError("\n".join(errors))
     for warning in warnings:
-        print(warning)
+        logger.warning(warning)
     return case_data, available_capacity_t0, max_demand, adjusted_reserve

@@ -1,12 +1,17 @@
 import os
+import logging
 from config import get_config
 from data_handler import load_case, validate_data
 from model_builder import build_model
 from solver import solve_model
 from solution_logger import log_solution, print_solution
+from logger import setup_logger
 
 
-def process_case(file_path, config, output_dir):
+logger = logging.getLogger(__name__)
+
+
+def process_case(file_path, config, output_dir, logger):
     try:
         data = load_case(file_path)
 
@@ -14,12 +19,16 @@ def process_case(file_path, config, output_dir):
             validate_data(data)
         )
         if errors:
-            print(f"Errors in {file_path}: {errors}")
+            logger.error("Errors in %s: %s", file_path, errors)
             return
         if warnings:
-            print(f"Warnings in {file_path}: {warnings}")
-        print(
-            f"Processing {file_path}: Capacity {available_capacity_t0:.2f} MW, Demand {max_demand:.2f} MW, Reserve {max(adjusted_reserve):.2f} MW"
+            logger.warning("Warnings in %s: %s", file_path, warnings)
+        logger.info(
+            "Processing %s: Capacity %.2f MW, Demand %.2f MW, Reserve %.2f MW",
+            file_path,
+            available_capacity_t0,
+            max_demand,
+            max(adjusted_reserve),
         )
 
         model, vars = build_model(
@@ -30,17 +39,18 @@ def process_case(file_path, config, output_dir):
         output_path = os.path.join(
             output_dir, f"solution_{os.path.basename(file_path)}"
         )
-        log_solution(solution, output_path)
+        log_solution(solution, output_path, logger)
         print_solution(solution)
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
+        logger.error("Error processing %s: %s", file_path, e)
 
 
-def run_batch(input_files, config=None, output_dir="solutions"):
+def run_batch(input_files, config=None, output_dir="solutions", log_file="process.log"):
     config = get_config(config)
     os.makedirs(output_dir, exist_ok=True)
+    logger = setup_logger(log_file)
     for file_path in input_files:
-        process_case(file_path, config, output_dir)
+        process_case(file_path, config, output_dir, logger)
 
 
 if __name__ == "__main__":
@@ -58,4 +68,4 @@ if __name__ == "__main__":
     input_files = [
         r"C:\Users\egor1\Desktop\Energy\Repo\SCUC\scuc_solver\data\case14.json"
     ]
-    run_batch(input_files, config)
+    run_batch(input_files, config, log_file="scuc_process.log")

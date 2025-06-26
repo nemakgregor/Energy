@@ -1,18 +1,24 @@
 import json
+import logging
 import os
 
-def log_solution(solution, output_path):
+def log_solution(solution, output_path, logger=None):
+    """Write solver output to ``output_path`` as JSON and log the action."""
+    logger = logger or logging.getLogger(__name__)
     if not solution["solution"]:
-        with open(output_path, 'w') as f:
+        with open(output_path, "w") as f:
             f.write(f"Status: {solution['status']}\nNo solution found.")
+        logger.info("No feasible solution. Status: %s", solution["status"])
+        logger.info("Solution written to %s", output_path)
         return
     output = {
         "status": solution["status"],
         "objective": solution["objective"],
-        "variables": solution["solution"]
+        "variables": solution["solution"],
     }
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(output, f, indent=2)
+    logger.info("Solution written to %s", output_path)
 
 def print_solution(solution):
     """Pretty-print a solver output dictionary."""
@@ -36,3 +42,4 @@ def print_solution(solution):
             print(f"{var_name}: {var_value:.2f} MW")
         if "level" in var_name:
             print(f"{var_name}: {var_value:.2f} MWh")
+
